@@ -4,8 +4,12 @@ param location string
 
 @description('The AI Project resource name.')
 param aiProjectName string
+@description('Use Storage Account')
+param useStorageAccount bool = true
 @description('The Storage Account resource name.')
 param storageAccountName string
+@description('The Storage Account SKU.')
+param storageAccountSku string = 'Standard_LRS'
 @description('The AI Services resource name.')
 param aiServicesName string
 @description('The AI Services model deployments.')
@@ -16,6 +20,8 @@ param logAnalyticsName string = ''
 param applicationInsightsName string = ''
 @description('The Azure Search resource name.')
 param searchServiceName string = ''
+@description('The Azure Search SKU.')
+param searchServiceSku string = 'basic'
 @description('The Application Insights connection name.')
 param appInsightConnectionName string
 param tags object = {}
@@ -28,12 +34,15 @@ param deploymentSeed string
 
 var deploymentSuffix = substring(uniqueString(parentDeploymentName, deploymentSeed), 0, 8)
 
-module storageAccount '../storage/storage-account.bicep' = {
+module storageAccount '../storage/storage-account.bicep' = if (useStorageAccount) {
   name: 'storageAccount'
   params: {
     location: location
     tags: tags
     name: storageAccountName
+    sku: {
+      name: storageAccountSku
+    }
     containers: [
       {
         name: 'default'
@@ -82,7 +91,7 @@ module applicationInsights '../monitor/applicationinsights.bicep' =
       location: location
       tags: tags
       name: applicationInsightsName
-      logAnalyticsWorkspaceId: !empty(logAnalyticsName) ? logAnalytics.outputs.id : ''
+      logAnalyticsWorkspaceId: !empty(logAnalyticsName) ? logAnalytics!.outputs.id : ''
     }
   }
 
@@ -95,17 +104,18 @@ module cognitiveServices '../ai/cognitiveservices.bicep' = {
     aiServiceName: aiServicesName
     aiProjectName: aiProjectName
     deployments: aiServiceModelDeployments
-    appInsightsId: applicationInsights.outputs.id
+    appInsightsId: !empty(applicationInsightsName) ? applicationInsights!.outputs.id : ''
     appInsightConnectionName: appInsightConnectionName
-    appInsightConnectionString: applicationInsights.outputs.connectionString
-    storageAccountId: storageAccount.outputs.id
+    appInsightConnectionString: !empty(applicationInsightsName) ? applicationInsights!.outputs.connectionString : ''
+    storageAccountId: useStorageAccount ? storageAccount!.outputs.id : ''
     storageAccountConnectionName: 'storageAccount'
-    storageAccountBlobEndpoint: storageAccount.outputs.primaryEndpoints.blob
+    storageAccountBlobEndpoint: useStorageAccount ? storageAccount!.outputs.primaryEndpoints.blob : ''
     aoaiConnectionName: aoaiConnectionName
+    useStorageAccount: useStorageAccount
   }
 }
 
-module accountStorageRoleAssignment  '../../core/security/role.bicep' = {
+module accountStorageRoleAssignment  '../../core/security/role.bicep' = if (useStorageAccount) {
   name: 'ai-account-role-storage-contributor'
   params: {
     principalType: 'ServicePrincipal'
@@ -114,7 +124,7 @@ module accountStorageRoleAssignment  '../../core/security/role.bicep' = {
   }
 }
 
-module projectStorageRoleAssignment  '../../core/security/role.bicep' = {
+module projectStorageRoleAssignment  '../../core/security/role.bicep' = if (useStorageAccount) {
   name: 'ai-project-role-storage-contributor'
   params: {
     principalType: 'ServicePrincipal'
@@ -135,12 +145,14 @@ module projectAIUserRoleAssignment  '../../core/security/role.bicep' = {
 
 module searchService '../search/search-services.bicep' =
   if (!empty(searchServiceName)) {
-    dependsOn: [cognitiveServices]
     name: 'searchService'
     params: {
       location: location
       tags: tags
       name: searchServiceName
+      sku: {
+        name: searchServiceSku
+      }
       semanticSearch: 'free'
       authOptions: { aadOrApiKey: { aadAuthFailureMode: 'http401WithBearerChallenge'}}
       projectName: cognitiveServices.outputs.projectName
@@ -149,35 +161,35 @@ module searchService '../search/search-services.bicep' =
   }
 
 module searchServiceStorageRoleAssignment '../../core/security/role.bicep' =
-  if (!empty(searchServiceName)) {
+  if (!empty(searchServiceName) && useStorageAccount) {
     name: 'search-service-role-storage-blob-data-reader'
     params: {
       principalType: 'ServicePrincipal'
-      principalId: !empty(searchServiceName) ? searchService.outputs.principalId : ''
+      principalId: searchService!.outputs.principalId
       roleDefinitionId: '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1' // Storage Blob Data Reader
     }
   }
 
 
 // Outputs
-output storageAccountId string = storageAccount.outputs.id
-output storageAccountName string = storageAccount.outputs.name
-output storageConnectionId string = cognitiveServices.outputs.storageConnectionId
-output storageConnectionName string = cognitiveServices.outputs.storageConnectionName
+output storageAccountId string = useStorageAccount ? storageAccount!.outputs.id : ''
+output storageAccountName string = useStorageAccount ? storageAccount!.outputs.name : ''
+output storageConnectionId string = useStorageAccount ? cognitiveServices.outputs.storageConnectionId : ''
+output storageConnectionName string = useStorageAccount ? cognitiveServices.outputs.storageConnectionName : ''
 
-output applicationInsightsId string = !empty(applicationInsightsName) ? applicationInsights.outputs.id : ''
-output applicationInsightsName string = !empty(applicationInsightsName) ? applicationInsights.outputs.name : ''
-output logAnalyticsWorkspaceId string = !empty(logAnalyticsName) ? logAnalytics.outputs.id : ''
-output logAnalyticsWorkspaceName string = !empty(logAnalyticsName) ? logAnalytics.outputs.name : ''
+output applicationInsightsId string = !empty(applicationInsightsName) ? applicationInsights!.outputs.id : ''
+output applicationInsightsName string = !empty(applicationInsightsName) ? applicationInsights!.outputs.name : ''
+output logAnalyticsWorkspaceId string = !empty(logAnalyticsName) ? logAnalytics!.outputs.id : ''
+output logAnalyticsWorkspaceName string = !empty(logAnalyticsName) ? logAnalytics!.outputs.name : ''
 
 output aiServiceId string = cognitiveServices.outputs.id
 output aiServicesName string = cognitiveServices.outputs.name
 output aiProjectEndpoint string = cognitiveServices.outputs.projectEndpoint
 output aiServicePrincipalId string = cognitiveServices.outputs.accountPrincipalId
 
-output searchServiceId string = !empty(searchServiceName) ? searchService.outputs.id : ''
-output searchServiceName string = !empty(searchServiceName) ? searchService.outputs.name : ''
-output searchServiceEndpoint string = !empty(searchServiceName) ? searchService.outputs.endpoint : ''
+output searchServiceId string = !empty(searchServiceName) ? searchService!.outputs.id : ''
+output searchServiceName string = !empty(searchServiceName) ? searchService!.outputs.name : ''
+output searchServiceEndpoint string = !empty(searchServiceName) ? searchService!.outputs.endpoint : ''
 
 output projectResourceId string = cognitiveServices.outputs.projectResourceId
-output searchConnectionId string = !empty(searchServiceName) ? searchService.outputs.searchConnectionId : ''
+output searchConnectionId string = !empty(searchServiceName) ? searchService!.outputs.searchConnectionId : ''
